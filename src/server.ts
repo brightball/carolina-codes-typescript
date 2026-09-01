@@ -33,13 +33,69 @@ const SPONSOR_COLS =
 const TALK_COLS =
   "slug, title, description, format, youtube_id, year, speaker_slug, languages, topics";
 
-const DSN =
-  process.env.DATABASE_URL ??
-  "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev";
+export type Json = Record<string, unknown>;
+export type QueryFn = (sql: string, params: unknown[]) => Promise<Json[]> | Json[];
+export type ConnectFn = () => Pool;
 
-const pool = new Pool({ connectionString: DSN });
+export let sqlCount = 0;
+export let connectCount = 0;
+export let queryFn: QueryFn | null = null;
+export let connectFn: ConnectFn | null = null;
 
-type Json = Record<string, unknown>;
+let pool: Pool | undefined;
+
+export function listenHost(): string {
+  return "::";
+}
+
+export function resetCounts(): void {
+  sqlCount = 0;
+  connectCount = 0;
+}
+
+export function setSqlCount(n: number): void {
+  sqlCount = n;
+}
+
+export function setConnectCount(n: number): void {
+  connectCount = n;
+}
+
+export function setQueryFn(fn: QueryFn | null): void {
+  queryFn = fn;
+}
+
+export function setConnectFn(fn: ConnectFn | null): void {
+  connectFn = fn;
+}
+
+export function dsn(): string {
+  let raw =
+    process.env.DATABASE_URL ??
+    "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev";
+  if (!raw.includes("sslmode=")) {
+    raw += (raw.includes("?") ? "&" : "?") + "sslmode=disable";
+  }
+  return raw;
+}
+
+export function openPool(): Pool {
+  connectCount += 1;
+  if (connectFn) return connectFn();
+  return new Pool({ connectionString: dsn() });
+}
+
+export function ensurePool(): Pool {
+  if (!pool) pool = openPool();
+  return pool;
+}
+
+export async function dbQuery(sql: string, params: unknown[] = []): Promise<Json[]> {
+  sqlCount += 1;
+  if (queryFn) return queryFn(sql, params);
+  const result = await ensurePool().query(sql, params);
+  return result.rows as Json[];
+}
 
 function asStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -101,32 +157,95 @@ async function talksFor(slug: string, year?: number): Promise<Json[]> {
     params.push(year);
   }
   sql += " ORDER BY year DESC";
-  const result = await pool.query(sql, params);
-  return result.rows.map((row) => clean(row) as Json);
+  const rows = await dbQuery(sql, params);
+  return rows.map((row) => clean(row) as Json);
 }
 
 async function talkYears(slug: string): Promise<number[]> {
-  const result = await pool.query(
+  const rows = await dbQuery(
     "SELECT DISTINCT year FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC",
     [slug],
   );
-  return result.rows.map((row) => Number(row.year));
+  return rows.map((row) => Number(row.year));
 }
 
 async function sponsorYears(slug: string): Promise<number[]> {
-  const result = await pool.query(
+  const rows = await dbQuery(
     "SELECT DISTINCT year FROM v1_sponsorships WHERE sponsor_slug = $1 ORDER BY year DESC",
     [slug],
   );
-  return result.rows.map((row) => Number(row.year));
+  return rows.map((row) => Number(row.year));
 }
 
 async function loadSpeaker(slug: string): Promise<Json | null> {
-  const result = await pool.query(
-    `SELECT ${SPEAKER_COLS} FROM v1_speakers WHERE slug = $1`,
-    [slug],
+  const rows = await dbQuery(`SELECT ${SPEAKER_COLS} FROM v1_speakers WHERE slug = $1`, [slug]);
+  return clean(rows[0]);
+}
+
+export async function listSpeakers(year?: number): Promise<Json[]> {
+  if (year == null) {
+    const rows = await dbQuery(
+      `SELECT ${SPEAKER_COLS} FROM v1_speakers ORDER BY last_name, first_name`,
+    );
+    return rows.map((row) => clean(row) as Json);
+  }
+  const rows = await dbQuery(
+    `SELECT ${SPEAKER_COLS} FROM v1_speakers ` +
+      "WHERE slug IN (SELECT speaker_slug FROM v1_talks WHERE year = $1) " +
+      "ORDER BY last_name, first_name",
+    [year],
   );
-  return clean(result.rows[0]);
+  return attachYearTags(rows.map((row) => clean(row) as Json), year);
+}
+
+async function attachYearTags(speakers: Json[], year: number): Promise<Json[]> {
+  if (speakers.length === 0) return speakers;
+  const slugs = speakers.map((speaker) => String(speaker.slug));
+  const talksBy = await loadTalksForYear(year);
+  const yearsBy = await loadYearsForSlugs(slugs);
+  for (const speaker of speakers) {
+    const slug = String(speaker.slug);
+    const talks = talksBy.get(slug) ?? [];
+    const years = yearsBy.get(slug) ?? [];
+    speaker.year = year;
+    speaker.talks = talks;
+    speaker.languages = uniqTags(talks, "languages");
+    speaker.topics = uniqTags(talks, "topics");
+    speaker.years = years;
+  }
+  return speakers;
+}
+
+async function loadTalksForYear(year: number): Promise<Map<string, Json[]>> {
+  const rows = await dbQuery(
+    `SELECT ${TALK_COLS} FROM v1_talks WHERE year = $1 ORDER BY speaker_slug, year DESC`,
+    [year],
+  );
+  const out = new Map<string, Json[]>();
+  for (const row of rows) {
+    const talk = clean(row) as Json;
+    const slug = String(talk.speaker_slug ?? "");
+    const list = out.get(slug) ?? [];
+    list.push(talk);
+    out.set(slug, list);
+  }
+  return out;
+}
+
+async function loadYearsForSlugs(slugs: string[]): Promise<Map<string, number[]>> {
+  const out = new Map<string, number[]>();
+  if (slugs.length === 0) return out;
+  const rows = await dbQuery(
+    "SELECT DISTINCT speaker_slug, year FROM v1_talks WHERE speaker_slug = ANY($1::text[]) ORDER BY speaker_slug, year DESC",
+    [slugs],
+  );
+  for (const row of rows) {
+    const slug = String(row.speaker_slug);
+    const list = out.get(slug) ?? [];
+    list.push(Number(row.year));
+    out.set(slug, list);
+  }
+  return out;
 }
 
 function send(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -141,7 +260,7 @@ function send(res: http.ServerResponse, status: number, payload: unknown): void 
   res.end(bytes);
 }
 
-async function route(
+export async function route(
   path: string,
   parts: string[],
   yearParam: string | null,
@@ -164,43 +283,15 @@ async function route(
     return { status: 200, payload: { ok: true } };
   }
   if (path === "/v1/years") {
-    const result = await pool.query(
-      "SELECT year, slug, name, status FROM v1_years ORDER BY year DESC",
-    );
+    const rows = await dbQuery("SELECT year, slug, name, status FROM v1_years ORDER BY year DESC");
     return {
       status: 200,
-      payload: { data: result.rows.map((row) => clean(row)) },
+      payload: { data: rows.map((row) => clean(row)) },
     };
   }
   if (path === "/v1/speakers") {
-    if (yearParam) {
-      const year = Number(yearParam);
-      const result = await pool.query(
-        `SELECT ${SPEAKER_COLS} FROM v1_speakers ` +
-          "WHERE slug IN (SELECT speaker_slug FROM v1_talks WHERE year = $1) " +
-          "ORDER BY last_name, first_name",
-        [year],
-      );
-      const speakers: Json[] = [];
-      for (const row of result.rows) {
-        const speaker = clean(row) as Json;
-        const talks = await talksFor(String(speaker.slug), year);
-        speaker.year = year;
-        speaker.talks = talks;
-        speaker.languages = uniqTags(talks, "languages");
-        speaker.topics = uniqTags(talks, "topics");
-        speaker.years = await talkYears(String(speaker.slug));
-        speakers.push(speaker);
-      }
-      return { status: 200, payload: { data: speakers } };
-    }
-    const result = await pool.query(
-      `SELECT ${SPEAKER_COLS} FROM v1_speakers ORDER BY last_name, first_name`,
-    );
-    return {
-      status: 200,
-      payload: { data: result.rows.map((row) => clean(row)) },
-    };
+    const year = yearParam ? Number(yearParam) : undefined;
+    return { status: 200, payload: { data: await listSpeakers(year) } };
   }
   if (
     parts.length === 4 &&
@@ -235,21 +326,19 @@ async function route(
   }
   if (path === "/v1/sponsors") {
     if (yearParam) {
-      const result = await pool.query(
+      const rows = await dbQuery(
         `SELECT ${YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 ORDER BY name`,
         [Number(yearParam)],
       );
       return {
         status: 200,
-        payload: { data: result.rows.map((row) => clean(row)) },
+        payload: { data: rows.map((row) => clean(row)) },
       };
     }
-    const result = await pool.query(
-      `SELECT ${SPONSOR_COLS} FROM v1_sponsors ORDER BY name`,
-    );
+    const rows = await dbQuery(`SELECT ${SPONSOR_COLS} FROM v1_sponsors ORDER BY name`);
     return {
       status: 200,
-      payload: { data: result.rows.map((row) => clean(row)) },
+      payload: { data: rows.map((row) => clean(row)) },
     };
   }
   if (
@@ -260,11 +349,11 @@ async function route(
   ) {
     const year = Number(parts[2]);
     const slug = parts[3];
-    const result = await pool.query(
+    const rows = await dbQuery(
       `SELECT ${YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 AND slug = $2`,
       [year, slug],
     );
-    const row = clean(result.rows[0]);
+    const row = clean(rows[0]);
     if (!row) return { status: 404, payload: { error: "not_found" } };
     const years = await sponsorYears(slug);
     row.years = years;
@@ -273,17 +362,13 @@ async function route(
   }
   if (parts.length === 3 && parts[0] === "v1" && parts[1] === "sponsors") {
     const slug = parts[2];
-    const result = await pool.query(
-      `SELECT ${SPONSOR_COLS} FROM v1_sponsors WHERE slug = $1`,
-      [slug],
-    );
-    const row = clean(result.rows[0]);
+    const rows = await dbQuery(`SELECT ${SPONSOR_COLS} FROM v1_sponsors WHERE slug = $1`, [slug]);
+    const row = clean(rows[0]);
     if (!row) return { status: 404, payload: { error: "not_found" } };
-    const sponsorships = await pool.query(
-      "SELECT * FROM v1_sponsorships WHERE sponsor_slug = $1",
-      [slug],
-    );
-    row.sponsorships = sponsorships.rows.map((item) => clean(item));
+    const sponsorships = await dbQuery("SELECT * FROM v1_sponsorships WHERE sponsor_slug = $1", [
+      slug,
+    ]);
+    row.sponsorships = sponsorships.map((item) => clean(item));
     return { status: 200, payload: { data: row } };
   }
   return { status: 404, payload: { error: "not_found" } };
@@ -322,29 +407,39 @@ async function register(port: string): Promise<void> {
   }
 }
 
-const port = process.env.PORT ?? "4011";
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    const path = url.pathname.replace(/\/+$/, "") || "/";
-    const parts = path.split("/").filter(Boolean);
-    const yearParam = url.searchParams.get("year");
-    const { status, payload } = await route(path, parts, yearParam);
-    send(res, status, payload);
-  } catch (err) {
-    send(res, 500, { error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-void register(port);
-server.listen(Number(port), "0.0.0.0", () => {
-  console.error(`carolina-codes-typescript listening on :${port}`);
-});
-
-function shutdown(): void {
-  server.close(() => {
-    void pool.end().then(() => process.exit(0));
+export function startServer(): http.Server {
+  ensurePool();
+  const port = process.env.PORT ?? "4011";
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      const path = url.pathname.replace(/\/+$/, "") || "/";
+      const parts = path.split("/").filter(Boolean);
+      const yearParam = url.searchParams.get("year");
+      const { status, payload } = await route(path, parts, yearParam);
+      send(res, status, payload);
+    } catch (err) {
+      send(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    }
   });
+
+  void register(port);
+  server.listen({ port: Number(port), host: listenHost(), ipv6Only: false }, () => {
+    console.error(
+      `carolina-codes-typescript listening on :${port} ${JSON.stringify(server.address())}`,
+    );
+  });
+
+  function shutdown(): void {
+    server.close(() => {
+      void (pool ? pool.end() : Promise.resolve()).then(() => process.exit(0));
+    });
+  }
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+  return server;
 }
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+
+if (/(^|[\\/])server\.(ts|js)$/.test(process.argv[1] ?? "")) {
+  startServer();
+}
