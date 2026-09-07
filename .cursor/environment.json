@@ -1,0 +1,14 @@
+{
+  "name": "carolina-codes-typescript",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "install": "npm install",
+  "ports": [
+    {
+      "name": "api",
+      "port": 4011
+    }
+  ]
+}
