@@ -1,6 +1,6 @@
 # carolina-codes-typescript
 
-Read-only v1 polyglot API. See README.md for install, run, and test commands.
+Read-only v1 polyglot API. See README.md for install, run, and test commands. `npm test` drives the shipped handler through `setQueryFn` and does not need Postgres. `npm run sast`, `npm run audit`, `gitleaks detect --source . --verbose`, and `npm run style` are the other four quality gates; `npm run hooks` installs pre-commit.
 
 ## Cursor Cloud specific instructions
 

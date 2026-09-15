@@ -13,3 +13,16 @@ npx tsx src/server.ts
 ```
 
 Or compile with `npx tsc` and run `node dist/server.js`.
+
+Quality gates (handler tests use the fake-catalog query hook and do not need Postgres):
+
+```
+npm test         # node:test against the shipped HTTP handler
+npm run sast     # ESLint security plugin
+npm run audit    # npm audit of the lockfile
+gitleaks detect --source . --verbose
+npm run style    # prettier --check
+npm run hooks    # install local pre-commit hooks
+```
+
+Pre-commit runs the same five checks (`application tests`, `static security scanner`, `3rd-party dependency scanner`, `gitleaks`, `prettier`). Install once with `npm run hooks` (needs `pre-commit` on PATH; `mise install` provides Node 25 and gitleaks). Emergency skip: `SKIP=tests,sast,audit,gitleaks,style git commit`.

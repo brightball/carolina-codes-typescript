@@ -1,0 +1,36 @@
+# Local pre-commit hooks. Emergency escape:
+#   SKIP=tests,sast,audit,gitleaks,style git commit
+# Install once: npm run hooks   (or: pre-commit install)
+repos:
+  - repo: local
+    hooks:
+      - id: tests
+        name: application tests
+        language: system
+        entry: npm test
+        pass_filenames: false
+        always_run: true
+      - id: sast
+        name: static security scanner
+        language: system
+        entry: npm run sast
+        pass_filenames: false
+        always_run: true
+      - id: audit
+        name: 3rd-party dependency scanner
+        language: system
+        entry: npm run audit
+        pass_filenames: false
+        always_run: true
+      - id: gitleaks
+        name: gitleaks
+        language: system
+        entry: gitleaks detect --source . --verbose
+        pass_filenames: false
+        always_run: true
+      - id: style
+        name: prettier
+        language: system
+        entry: npm run style
+        pass_filenames: false
+        always_run: true

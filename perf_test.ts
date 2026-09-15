@@ -143,7 +143,10 @@ const v4 = await fetch(`http://127.0.0.1:${boundPort}/health`);
 const v4Body = await v4.text();
 const v6 = await fetch(`http://[::1]:${boundPort}/health`);
 const v6Body = await v6.text();
-expect(v4.ok && v4Body.includes('"ok":true'), `in-process 127.0.0.1 /health ${v4.status} ${v4Body}`);
+expect(
+  v4.ok && v4Body.includes('"ok":true'),
+  `in-process 127.0.0.1 /health ${v4.status} ${v4Body}`,
+);
 expect(v6.ok && v6Body.includes('"ok":true'), `in-process [::1] /health ${v6.status} ${v6Body}`);
 await new Promise<void>((resolve, reject) => {
   bound.close((err) => (err ? reject(err) : resolve()));

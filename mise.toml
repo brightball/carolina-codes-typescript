@@ -1,0 +1,3 @@
+[tools]
+node = "25"
+gitleaks = "8.30.1"

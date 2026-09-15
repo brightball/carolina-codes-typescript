@@ -70,9 +70,7 @@ export function setConnectFn(fn: ConnectFn | null): void {
 }
 
 export function dsn(): string {
-  let raw =
-    process.env.DATABASE_URL ??
-    "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev";
+  let raw = process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev";
   if (!raw.includes("sslmode=")) {
     raw += (raw.includes("?") ? "&" : "?") + "sslmode=disable";
   }
@@ -105,9 +103,7 @@ function asStringArray(value: unknown): string[] {
     const stripped = value.trim();
     if (!stripped || stripped === "{}") return [];
     const inner =
-      stripped.startsWith("{") && stripped.endsWith("}")
-        ? stripped.slice(1, -1)
-        : stripped;
+      stripped.startsWith("{") && stripped.endsWith("}") ? stripped.slice(1, -1) : stripped;
     return inner
       .split(",")
       .map((part) => part.replace(/^"|"$/g, "").trim())
@@ -195,7 +191,10 @@ export async function listSpeakers(year?: number): Promise<Json[]> {
       "ORDER BY last_name, first_name",
     [year],
   );
-  return attachYearTags(rows.map((row) => clean(row) as Json), year);
+  return attachYearTags(
+    rows.map((row) => clean(row) as Json),
+    year,
+  );
 }
 
 async function attachYearTags(speakers: Json[], year: number): Promise<Json[]> {
@@ -380,27 +379,24 @@ async function register(port: string): Promise<void> {
   if (!url || !token) return;
   const base = process.env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${port}`;
   try {
-    const resp = await fetch(
-      `${url.replace(/\/$/, "")}/internal/api-endpoints/register`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          language: LANGUAGE,
-          language_version: LANGUAGE_VERSION,
-          api_version: API_VERSION,
-          framework: FRAMEWORK,
-          created_year: CREATED_YEAR,
-          schema_version: SCHEMA_VERSION,
-          base_url: base,
-          endpoints: ENDPOINTS,
-        }),
-        signal: AbortSignal.timeout(5000),
+    const resp = await fetch(`${url.replace(/\/$/, "")}/internal/api-endpoints/register`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify({
+        language: LANGUAGE,
+        language_version: LANGUAGE_VERSION,
+        api_version: API_VERSION,
+        framework: FRAMEWORK,
+        created_year: CREATED_YEAR,
+        schema_version: SCHEMA_VERSION,
+        base_url: base,
+        endpoints: ENDPOINTS,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
     console.error(`registered with elixir: ${resp.status}`);
   } catch (err) {
     console.error(`register: ${err}`);
