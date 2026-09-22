@@ -173,10 +173,13 @@ describe("v1 handler via shipped HTTP server", { concurrency: false }, () => {
   });
 
   test("GET / identity is TypeScript / node:http with endpoints list", async () => {
+    const connects = app.connectCount;
     const { status, body } = await get("/");
     assert.equal(status, 200);
     assert.equal(body.language, "TypeScript");
     assert.equal(body.framework, "node:http");
+    assert.equal(app.sqlCount, 0);
+    assert.equal(app.connectCount, connects);
     assert.ok(Array.isArray(body.endpoints));
     const endpoints = body.endpoints as { method: string; path: string }[];
     assert.ok(endpoints.length > 0);
@@ -307,5 +310,129 @@ describe("v1 handler via shipped HTTP server", { concurrency: false }, () => {
     const { status, body } = await get("/not-a-route");
     assert.equal(status, 404);
     assert.deepEqual(body, { error: "not_found" });
+  });
+
+  test("/health responds on 127.0.0.1 and ::1 without SQL or a new pool connect", async () => {
+    const info = server.address() as AddressInfo;
+    assert.equal(app.listenHost(), "::");
+    assert.equal(info.family, "IPv6");
+    const connects = app.connectCount;
+    const v4 = await fetch(`http://127.0.0.1:${info.port}/health`);
+    const v6 = await fetch(`http://[::1]:${info.port}/health`);
+    assert.equal(v4.status, 200);
+    assert.deepEqual(await v4.json(), { ok: true });
+    assert.equal(v6.status, 200);
+    assert.deepEqual(await v6.json(), { ok: true });
+    assert.equal(app.sqlCount, 0);
+    assert.equal(app.connectCount, connects);
+  });
+
+  test("identity and health do not query or open a pool", async () => {
+    app.resetPool();
+    app.setQueryFn(() => {
+      throw new Error("sql");
+    });
+    app.setConnectFn(() => {
+      throw new Error("connect");
+    });
+    app.resetCounts();
+    try {
+      const health = await app.route("/health", ["health"], null);
+      const home = await app.route("/", [], null);
+      assert.equal(health.status, 200);
+      assert.deepEqual(health.payload, { ok: true });
+      assert.equal(home.status, 200);
+      assert.equal((home.payload as app.Json).language, "TypeScript");
+      assert.equal((home.payload as app.Json).framework, "node:http");
+      assert.equal(app.sqlCount, 0);
+      assert.equal(app.connectCount, 0);
+    } finally {
+      app.setQueryFn(fakeCatalog);
+      app.setConnectFn(dummyPool);
+      app.resetPool();
+      app.ensurePool();
+    }
+  });
+
+  test("year speaker listing is a bounded query count and reuses one pool", async () => {
+    const slugs = ["s0", "s1", "s2"];
+    function rowsFor(sql: string): app.Json[] {
+      if (sql.includes("FROM v1_speakers")) {
+        return slugs.map((slug, index) => ({
+          slug,
+          first_name: "A",
+          last_name: `B${index}`,
+          name: slug,
+          featured: false,
+        }));
+      }
+      if (sql.includes("FROM v1_talks WHERE year")) {
+        return slugs.map((slug) => ({
+          slug: `talk-${slug}`,
+          title: "Talk",
+          description: "",
+          format: "talk",
+          youtube_id: "",
+          year: 2026,
+          speaker_slug: slug,
+          languages: ["typescript"],
+          topics: ["development"],
+        }));
+      }
+      if (sql.includes("ANY(")) {
+        return slugs.flatMap((slug) => [
+          { speaker_slug: slug, year: 2026 },
+          { speaker_slug: slug, year: 2024 },
+        ]);
+      }
+      return [];
+    }
+
+    app.resetPool();
+    app.setQueryFn(null);
+    let opened = 0;
+    app.setConnectFn(() => {
+      opened += 1;
+      return {
+        end: async () => undefined,
+        query: async (sql: string) => ({ rows: rowsFor(sql) }),
+      } as unknown as Pool;
+    });
+    app.setSqlCount(0);
+    app.setConnectCount(0);
+
+    try {
+      const first = await app.route("/v1/speakers", ["v1", "speakers"], "2026");
+      assert.equal(first.status, 200);
+      const data = (first.payload as { data: app.Json[] }).data;
+      assert.equal(data.length, slugs.length);
+      assert.ok(app.sqlCount > 0);
+      assert.ok(app.sqlCount < 2 * data.length);
+      assert.ok(app.sqlCount <= 4);
+      assert.equal(opened, 1);
+      assert.equal(app.connectCount, 1);
+      for (const speaker of data) {
+        assert.deepEqual(speaker.languages, ["typescript"]);
+        assert.deepEqual(speaker.topics, ["development"]);
+        const years = speaker.years as number[];
+        assert.ok(years.length >= 2);
+        for (let i = 1; i < years.length; i++) {
+          assert.ok(Number(years[i - 1]) >= Number(years[i]));
+        }
+      }
+      const boot = app.connectCount;
+      const bounded = app.sqlCount;
+      app.setSqlCount(0);
+      const second = await app.route("/v1/speakers", ["v1", "speakers"], "2026");
+      assert.equal(second.status, 200);
+      assert.equal(app.sqlCount, bounded);
+      assert.equal(opened, 1);
+      assert.equal(app.connectCount, boot);
+    } finally {
+      app.setQueryFn(fakeCatalog);
+      app.setConnectFn(dummyPool);
+      app.resetPool();
+      app.ensurePool();
+    }
   });
 });

@@ -137,7 +137,7 @@ delete process.env.POLYGLOT_REGISTER_TOKEN;
 const bound = app.startServer();
 await once(bound, "listening");
 const info = bound.address() as AddressInfo;
-expect(info.family === "IPv6" || info.family === 6, `bound family is IPv6, got ${info.family}`);
+expect(info.family === "IPv6", `bound family is IPv6, got ${info.family}`);
 const boundPort = info.port;
 const v4 = await fetch(`http://127.0.0.1:${boundPort}/health`);
 const v4Body = await v4.text();

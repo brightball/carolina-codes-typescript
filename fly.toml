@@ -8,13 +8,16 @@ primary_region = "iad"
 
 [env]
   PORT = "8080"
+  NODE_ENV = "production"
   CAROLINA_URL = "http://carolina-codes.internal:8080"
   PUBLIC_BASE_URL = "https://carolina-codes-typescript.fly.dev"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  # Suspend resumes a memory snapshot after idle instead of a full machine boot.
+  # Machine memory stays at 256mb, under Fly's 2GB suspend limit.
+  auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 0
   processes = ["app"]

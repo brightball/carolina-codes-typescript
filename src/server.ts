@@ -80,12 +80,26 @@ export function dsn(): string {
 export function openPool(): Pool {
   connectCount += 1;
   if (connectFn) return connectFn();
-  return new Pool({ connectionString: dsn() });
+  const created = new Pool({
+    connectionString: dsn(),
+    max: 4,
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 5_000,
+    allowExitOnIdle: true,
+  });
+  created.on("error", (err: Error) => {
+    console.error(`pg pool: ${err.message}`);
+  });
+  return created;
 }
 
 export function ensurePool(): Pool {
   if (!pool) pool = openPool();
   return pool;
+}
+
+export function resetPool(): void {
+  pool = undefined;
 }
 
 export async function dbQuery(sql: string, params: unknown[] = []): Promise<Json[]> {
@@ -200,8 +214,7 @@ export async function listSpeakers(year?: number): Promise<Json[]> {
 async function attachYearTags(speakers: Json[], year: number): Promise<Json[]> {
   if (speakers.length === 0) return speakers;
   const slugs = speakers.map((speaker) => String(speaker.slug));
-  const talksBy = await loadTalksForYear(year);
-  const yearsBy = await loadYearsForSlugs(slugs);
+  const [talksBy, yearsBy] = await Promise.all([loadTalksForYear(year), loadYearsForSlugs(slugs)]);
   for (const speaker of speakers) {
     const slug = String(speaker.slug);
     const talks = talksBy.get(slug) ?? [];
@@ -302,11 +315,10 @@ export async function route(
     const slug = parts[3];
     const speaker = await loadSpeaker(slug);
     if (!speaker) return { status: 404, payload: { error: "not_found" } };
-    const talks = await talksFor(slug, year);
+    const [talks, years] = await Promise.all([talksFor(slug, year), talkYears(slug)]);
     if (talks.length === 0) {
       return { status: 404, payload: { error: "not_found" } };
     }
-    const years = await talkYears(slug);
     speaker.year = year;
     speaker.years = years;
     speaker.other_years = years.filter((n) => n !== year);
@@ -319,8 +331,9 @@ export async function route(
     const slug = parts[2];
     const speaker = await loadSpeaker(slug);
     if (!speaker) return { status: 404, payload: { error: "not_found" } };
-    speaker.talks = await talksFor(slug);
-    speaker.years = await talkYears(slug);
+    const [talks, years] = await Promise.all([talksFor(slug), talkYears(slug)]);
+    speaker.talks = talks;
+    speaker.years = years;
     return { status: 200, payload: { data: speaker } };
   }
   if (path === "/v1/sponsors") {
@@ -348,25 +361,27 @@ export async function route(
   ) {
     const year = Number(parts[2]);
     const slug = parts[3];
-    const rows = await dbQuery(
-      `SELECT ${YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 AND slug = $2`,
-      [year, slug],
-    );
+    const [rows, years] = await Promise.all([
+      dbQuery(`SELECT ${YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 AND slug = $2`, [
+        year,
+        slug,
+      ]),
+      sponsorYears(slug),
+    ]);
     const row = clean(rows[0]);
     if (!row) return { status: 404, payload: { error: "not_found" } };
-    const years = await sponsorYears(slug);
     row.years = years;
     row.other_years = years.filter((n) => n !== year);
     return { status: 200, payload: { data: row } };
   }
   if (parts.length === 3 && parts[0] === "v1" && parts[1] === "sponsors") {
     const slug = parts[2];
-    const rows = await dbQuery(`SELECT ${SPONSOR_COLS} FROM v1_sponsors WHERE slug = $1`, [slug]);
+    const [rows, sponsorships] = await Promise.all([
+      dbQuery(`SELECT ${SPONSOR_COLS} FROM v1_sponsors WHERE slug = $1`, [slug]),
+      dbQuery("SELECT * FROM v1_sponsorships WHERE sponsor_slug = $1", [slug]),
+    ]);
     const row = clean(rows[0]);
     if (!row) return { status: 404, payload: { error: "not_found" } };
-    const sponsorships = await dbQuery("SELECT * FROM v1_sponsorships WHERE sponsor_slug = $1", [
-      slug,
-    ]);
     row.sponsorships = sponsorships.map((item) => clean(item));
     return { status: 200, payload: { data: row } };
   }
@@ -404,7 +419,6 @@ async function register(port: string): Promise<void> {
 }
 
 export function startServer(): http.Server {
-  ensurePool();
   const port = process.env.PORT ?? "4011";
   const server = http.createServer(async (req, res) => {
     try {
@@ -420,11 +434,19 @@ export function startServer(): http.Server {
   });
 
   void register(port);
+  // Fly Proxy reuses upstream sockets past Node's 5s keep-alive default.
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 70_000;
   server.listen({ port: Number(port), host: listenHost(), ipv6Only: false }, () => {
     console.error(
       `carolina-codes-typescript listening on :${port} ${JSON.stringify(server.address())}`,
     );
   });
+  try {
+    ensurePool();
+  } catch (err) {
+    console.error(`pool: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   function shutdown(): void {
     server.close(() => {

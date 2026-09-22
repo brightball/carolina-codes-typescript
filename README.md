@@ -17,7 +17,7 @@ Or compile with `npx tsc` and run `node dist/server.js`.
 Quality gates (handler tests use the fake-catalog query hook and do not need Postgres):
 
 ```
-npm test         # node:test against the shipped HTTP handler
+npm test         # tsc --noEmit of shipped sources, then node:test against the shipped HTTP handler
 npm run sast     # ESLint security plugin
 npm run audit    # npm audit of the lockfile
 gitleaks detect --source . --verbose
