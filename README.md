@@ -2,6 +2,19 @@
 
 Read-only v1 polyglot API for Carolina Code Conference. Queries `v1_*` SQL views over `node:http` and `pg`.
 
+## Versions
+
+- Language: Node 25. Pinned in `mise.toml` (`node = "25"`), `package.json` `engines` (`>=25`), the `node:25-alpine` image, and the Gitea `node:25` workflow image.
+- TypeScript: 5.9 (`typescript` `^5.9.2`). The package is ESM (`"type": "module"`).
+- Framework: `node:http`, from the Node 25 standard library. There is no separate framework package and no framework version other than Node's.
+- `pg` `^8.16.3` for PostgreSQL.
+- `tsx` `^4.20.6` runs `npm run dev`. It is not in the production image.
+- ESLint 9 (`eslint` `^9.39.5`) with `eslint-plugin-security` 3 (`^3.0.1`) and `typescript-eslint` `^8.70.0`.
+- Prettier 3 (`prettier` `^3.9.6`).
+- gitleaks 8.30.1, pinned in `mise.toml`.
+
+CRaC does not apply to this Node service. Idle Fly machines suspend instead. That choice is recorded in `DECISIONS.md`. Commands and gotchas for agents are in `MEMORY.md`.
+
 ```
 npm install
 DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/carolina_dev \
